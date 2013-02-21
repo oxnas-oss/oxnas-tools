@@ -1,0 +1,31 @@
+commit 62ba8d56146fe050fb0dd41dce20d1966eac5025
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Thu Feb 21 19:20:00 2013 +0100
+
+    set to version 1.0.0
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
+
+commit ff66f9dede21b243bdad1b4513e96fed466d4b0e
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Thu Feb 21 19:18:00 2013 +0100
+
+    expand ignore list
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
+
+commit 31b5eca6f52e411ded9e41253d659d05a89816d3
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Thu Feb 21 19:16:04 2013 +0100
+
+    add autogen script
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
+
+commit eebe5b442ee5ed2ab08de14b36e2d44d0cd243bd
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Thu Feb 21 19:13:34 2013 +0100
+
+    initial devel import
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
