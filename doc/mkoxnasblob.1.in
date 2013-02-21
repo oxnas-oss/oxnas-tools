@@ -1,0 +1,210 @@
+.\"Created with GNOME Manpages Editor Wizard
+.\"http://sourceforge.net/projects/gmanedit2
+.TH mkoxnasblob 1 "17 February 2013" "" "Generate PIC bootstub code for OXNAS"
+
+.SH NAME
+mkoxnasblob \- Generate PIC bootstub code for Oxford SATA network storage controller (OXNAS)
+
+.SH SYNOPSIS
+.B mkoxnasblob
+.RI [ options ]
+.PP
+.B mkoxnasblob
+[ -n name ] -t type -o blob elf
+.br
+.B mkoxnasblob
+[ -n name ] -t type -b elf
+.br
+.B mkoxnasblob
+-h | -v
+.br
+
+.SH DESCRIPTION
+This manual page explains the
+.B mkoxnasblob
+command.
+.PP
+The
+.B mkoxnasblob
+command will be used to create combined images that would accept by the OXNAS
+boot rom in Oxford Semiconductors OXE800 and OXE810. Moste parts of the
+calculation were borrowed from the oxnas boot tools v0.1 by J. J. Larworthy,
+(C) 2006, first published by Steffen Sledz on OpenEmbedded.org on 05/05/2010, see:
+
+http://git.openembedded.org/openembedded/diff/?id=95a6933e4e744a60d0b0ba8ce0567d499135fcdc
+
+.PP
+\fBmkoxnasblob\fP generates blob.[srec|elf|bin|lst] files into the working directory.
+.PP
+\fBmkoxnasblob\fP supports only the OXE8x0 (ARMv5) architecture (not yet the OXE820).
+.PP
+The combined images has the following structure:
+.B
+.IP offset 16
+.B type: description
+.B
+.IP 0x00
+\fB32 bit:\fP OXNAS boot rom magic key \fI0xe28ff038\fP, ARM assembler mnemonic: \fIADD PC, PC, #56 ; 0x38\fP
+.B
+.IP 0x04
+\fB44 ytes:\fP reserved, all set to zero
+.B
+.IP 0x30
+\fB32 bit:\fP payload data size inclusive the pre-payload data magic key at offset 0x3C
+.B
+.IP 0x34
+\fB32 bit:\fP payload data CRC-32 checksum, calculated over all bytes beginning from offset 0x3C
+.B
+.IP 0x38
+\fB32 bit:\fP blob header CRC-32 checksum, calculated over all bytes from offset 0x00 until 0x34
+.B
+.IP 0x3C
+\fB32 bit:\fP pre-payload data magic key \fI0xe1a00000\fP, ARM assembler mnemonic: \fINOP\fP
+.B
+.IP 0x40
+\fBxx byte:\fP payload data with header (see below)
+.PP
+\fBmkoxnasblob\fP supports different payload header formats embedded in front to the payload data but until now only one format is valid:
+.PP
+The current
+.I V1 payload header
+format adds a 96 byte header to raw payload data and concatenates with the original blob header
+from above that will be interpreted and excuted by the OXNAS boot rom. The V1 payload header
+containing information about type of content, entry point, data size, time stamp, etc.
+There is no checksum. The header has the following structure:
+.B
+.IP offset 16
+.B type: description
+.B
+.IP 0x00
+\fB32 bit:\fP OXNAS boot rom magic key \fI0xe28ff058\fP, ARM assembler mnemonic: \fIADD PC, PC, #88 ; 0x58\fP
+.B
+.IP 0x04
+\fB8 ytes:\fP reserved, all set to zero
+.B
+.IP 0x0C
+\fB16 bit:\fP version of payload header, for V1 payload header \fI0x0100\fP
+.B
+.IP 0x0E
+\fB16 bit:\fP type of payload data (see below)
+.B
+.IP 0x10
+\fB12 byte:\fP reserved for user data
+.B
+.IP 0x1C
+\fB32 byte:\fP name string of payload data
+.B
+.IP 0x3C
+\fB32 byte:\fP builddate string of payload data
+.B
+.IP 0x5C
+\fB32 bit:\fP pre-payload data magic key \fI0xe1a00000\fP, ARM assembler mnemonic: \fINOP\fP
+.B
+.IP 0x60
+\fBxx byte:\fP payload data
+.PP
+The
+.B V1 payload header
+supports different payload content types (at offset 0x0E):
+.B
+.IP code 16
+.B description
+.B
+.IP 0x0100
+\fBStandalone:\fP Xilinx standalone application, binary image
+.B
+.IP 0x0200
+\fBreserved:\fP reserved, binary image
+.B
+.IP 0x0300
+\fBeCos:\fP FSF RedBoot/eCos application, binary image
+.B
+.IP 0x0400
+\fBFreeRTOS:\fP FreeRTOS/SafeRTOS application, binary image
+.B
+.IP 0x0500
+\fBU-Boot:\fP U-Boot second stage boot loader, binary image
+.B
+.IP 0x0600
+\fBLinux:\fP Linux kernel, binary image
+
+.SH OPTIONS
+.B Generate OXNAS-Blob with V1 payload header:
+.TP
+.BI "\-o [" "blob file name" "]"
+Write out OXNAS-Blob to 'blob file name'.
+.TP
+.BI "\-t [" "payload data type" "]"
+Set payload data type code on offset 0x0E.
+Use option -h to see the list of supported image type.
+.TP
+.BI "\-n [" "payload data name" "]"
+Set payload data description string on offset 0x1C.
+.PP
+.B Write out the bootstub code of OXNAS-Blob to standard output:
+.TP
+.BI "\-b"
+Disable code assembly and print our the bootstub code to standard output.
+.TP
+.BI "\-t [" "payload data type" "]"
+Set payload data type code on offset 0x0E.
+Use option -h to see the list of supported image type.
+.TP
+.BI "\-n [" "payload data name" "]"
+Set payload data description string on offset 0x1C.
+.PP
+.B Help end version output:
+.TP
+.BI "\-h"
+Print out a short help message.
+.TP
+.BI "\-v"
+Print out a short version and copyright message.
+
+.SH "EXIT STATUS"
+An exit status of zero indicates success. A non-zero exit status indicates failure.
+.TP
+.BI 0
+Success
+.TP
+.BI 1
+Operating error
+.TP
+.BI 3
+Wrong interpreter
+.br
+\fBmkoxnasblob\fP is a Bash shell script and demanded on Bash version 3 or above.
+
+.SH EXAMPLE
+Create OXNAS-Blob for Linux kernel from ELF file vmlinux:
+.nf
+.B mkoxnasblob -n """Linux kernel""" -t Linux -o linux-oxnas vmlinux
+.PP
+Show PIC bootstub code for U-Boot from ELF file u-boot.elf:
+.nf
+.B mkoxnasblob -n """U-Boot""" -t U-Boot -b u-boot.elf
+
+.SH "CONFORMING TO"
+Images that were created by mkoxnasblob can be launched both from the OXNAS boot rom
+inside the OXE800 and OXE810.
+
+.SH BUGS
+Please report bugs! Reporting bugs to @PACKAGE_BUGREPORT@.
+
+.SH VERSIONS
+This man page is current for version @PACKAGE_VERSION@ of @PACKAGE_NAME@.
+
+.SH CREDITS
+mkoxnasblob is distributed under the GNU public license.  See the file COPYING for details.
+.PP
+A German WEB site is available at http://www.li-pro.de/soho:ihmnhd:start
+.PP
+I would be delighted to hear from you if you like this program.  Please contact me.
+
+.SH THANKS
+Especial thanks go out to J. J. Larworthy and Steffen Sledz for publishing the
+oxnas boot tools.
+
+.SH AUTHOR
+This manual page was written by Stephan Linz <linz@li-pro.net>
+

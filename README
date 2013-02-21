@@ -1,0 +1,26 @@
+OXNAS Tools
+===========
+
+This is a collection of small host programs you will need for
+cross development target the Oxford SATA storage controller:
+
+http://www.plxtech.com/products/consumer/nas
+
+For some background informations please read text files in doc.
+
+mkoxnasblob
+-----------
+
+The mkoxnasblob command will be used to create combined images that
+would accept by the OXNAS boot rom in Oxford Semiconductors OXE800
+and OXE810. Moste parts of the calculation were borrowed from the
+oxnas boot tools v0.1 by J. J. Larworthy, (C) 2006, first published
+by Steffen Sledz on OpenEmbedded.org on 05/05/2010, see:
+
+http://git.openembedded.org/openembedded/diff/?id=95a6933e4e744a60d0b0ba8ce0567d499135fcdc
+
+For more information please read man page: mkoxnasblob.1
+
+------------------------------------------------------------------------
+02/17/13-17:21:26
+Stephan Linz <linz@li-pro.net>

@@ -1,0 +1,4 @@
+[So 17. Feb 17:17:24 UTC 2013]
+http://git.openembedded.org/openembedded/commit/?id=95a6933e4e744a60d0b0ba8ce0567d499135fcdc
+http://game.jcrosoft.org/git?p=openembedded.git;a=commitdiff;h=95a6933e4e744a60d0b0ba8ce0567d499135fcdc
+http://game.jcrosoft.org/git?p=openembedded.git;a=patch;h=95a6933e4e744a60d0b0ba8ce0567d499135fcdc

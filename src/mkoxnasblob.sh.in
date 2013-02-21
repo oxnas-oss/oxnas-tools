@@ -1,0 +1,1188 @@
+#!/bin/bash
+#
+# (C) Copyright 2013 Li-Pro.Net
+#
+# Stephan Linz <linz@li-pro.net>
+#
+# See file CREDITS for list of people who contributed to this
+# project.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; either version 2 of
+# the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+# MA 02111-1307 USA
+#
+# TODO:
+#  - oxnasblob_elf2bin(): improve the size calculation of the payload
+#    binary data in respect of different section alignments and
+#    inter section gaps
+#
+#set -n
+#set -x
+set -e
+
+if test ${BASH_VERSINFO[0]} -lt 3; then
+	echo "FATAL: wrong Bash version, need Bash 3 or above"
+	exit 3
+fi
+
+#
+# array of directly executable programs
+#
+ARCH=0	# architecture string for cross binaries
+AWK=1	# index for awk
+SED=2	# index for sed
+ST=3	# index for stat
+CAS=4	# index for ${CROSS}-as
+COCP=5	# index for ${CROSS}-objcopy
+CODP=6	# index for ${CROSS}-objdump
+CSIZE=7	# index for ${CROSS}-size
+PROGS_NUM=8
+CROSS_PROGS="as objcopy objdump size"
+
+#
+# empty array of files we have to remove on exit
+#
+declare -a FILES_TO_REMOVE
+
+#
+# array indices for payload data
+#
+ELF=0	# payload data elf file name
+BIN=1	# payload data bin file name (will be temporary generated)
+GELF=2	# payload data generated elf file name (will be temporary generated)
+TYPE=3	# payload data content type (16 bit integer value)
+NAME=4	# payload data content name (32 character string)
+DATE=5	# payload data content date (32 character string)
+BASE=6	# payload data base address (from elf file)
+SIZE=7	# payload data binary size  (from elf file)
+TAEN=8	# payload data target endianess
+PCRC=9	# payload data crc-32
+PAYLOAD_NUM=10
+
+#
+# array indices for global blob informations
+#
+VERS=0	# chip version of payload
+OUTP=1	# blob base name without suffix
+ADDR=2	# address to realocate the whole blob (bootstub+payload)
+COMP=3	# compatible, for example to oxnas-boot-tools-0.1
+BCRC=4	# blob header crc-32
+BLOB_NUM=5
+
+#
+# the different OXE chip versions we want to support
+# until now we do not (yet) support the NAS782x
+#
+OXNAS_VERSION_OXE800=0x0800
+OXNAS_VERSION_OXE810=0x0810
+OXNAS_VERSION_OXE820=0x0820
+
+#
+# default payload header version as expacted by this bootstub
+# code and any future boot code in target device
+#
+HEADER_VERSION=0x0100
+
+version() {
+	echo "$1@PACKAGE_STRING@ (@BUILDDATE@ @BUILDTIME@)$2"
+}
+
+copyright() {
+	echo "$1Copyright (C) 2013 Li-Pro.Net$2"
+	echo "$1This is free software; see the source for copying conditions.  There is NO$2"
+	echo "$1warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.$2"
+}
+
+hint_tools() {
+	declare +x bin
+	declare +x pfx
+	declare +x arch=${1}
+	arch=${arch:="ARCH"}
+	declare +x prefixes=$(oxnasblob_arch2prefix "${arch}")
+	echo "Please be aware that you will need the \"${arch}\" cross"
+	echo "development tools for the following steps. Make sure that the"
+	echo "directory which contains the binaries of your toolchain are in"
+	echo "your PATH. Following binaries are expacted:"
+	echo
+	for bin in ${CROSS_PROGS}; do
+		printf "%10.10s: " ${bin}
+		for pfx in ${prefixes}; do
+			echo "${pfx}-${bin}"
+			echo -n "            "
+		done
+		echo
+	done
+	echo "Please read wiki page: https://wiki.linaro.org/WorkingGroups/ToolChain/Using"
+	echo
+}
+
+usage() {
+	echo "Usage: $(basename $0) [-n name] [-t type] [-s] -o blob elf"
+	echo "          -n ==> set payload name to 'name'"
+	echo "          -t ==> set payload type to 'type' (see Types)"
+	echo "          -s ==> generate strickt compatible blob to oxnas-boot-tools-0.1"
+	echo "          -o ==> write blob binary to 'blob'"
+	echo "                 use payload data from 'elf'"
+	echo "       $(basename $0) [-n name] [-t type] [-s] -b elf"
+	echo "          -n ==> set payload name to 'name'"
+	echo "          -t ==> set payload type to 'type' (see Types)"
+	echo "          -s ==> generate strickt compatible blob to oxnas-boot-tools-0.1"
+	echo "          -b ==> show bootstub assembly listing"
+	echo "                 use payload data from 'elf'"
+	echo "       $(basename $0) -h | -v"
+	echo "          -h ==> show this short help message"
+	echo "          -v ==> show version and copyright"
+	echo
+	echo "Types: Standalone, eCos, FreeRTOS, U-Boot, Linux, unknown (default)"
+	echo
+	[ -n "$1" ] && exit $1 || exit 1
+}
+
+error() {
+	echo "ERROR: ${FUNCNAME[1]}::${BASH_LINENO[0]}: $@" >&2
+}
+
+onexit() {
+	for file in ${FILES_TO_REMOVE[@]}; do
+		rm -f ${file}
+	done
+}
+
+#
+# initialze each element of an array with 'none' for given size
+#
+# $1	reference to an array
+# $2	reference to the number of elements in array
+#
+# return:
+# 1:	wrong arguments
+#
+init_array() {
+	if [ $# -ne 2 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare +x numb=(\${$2})
+	numb=$((--numb))
+
+	for el in $(seq 0 ${numb}); do
+		eval $1[$el]=none
+	done
+}
+
+declare -a CRC32_TABLE
+CRC32_TABLE=(
+	0x00000000 0x77073096 0xee0e612c 0x990951ba
+	0x076dc419 0x706af48f 0xe963a535 0x9e6495a3
+	0x0edb8832 0x79dcb8a4 0xe0d5e91e 0x97d2d988
+	0x09b64c2b 0x7eb17cbd 0xe7b82d07 0x90bf1d91
+	0x1db71064 0x6ab020f2 0xf3b97148 0x84be41de
+	0x1adad47d 0x6ddde4eb 0xf4d4b551 0x83d385c7
+	0x136c9856 0x646ba8c0 0xfd62f97a 0x8a65c9ec
+	0x14015c4f 0x63066cd9 0xfa0f3d63 0x8d080df5
+	0x3b6e20c8 0x4c69105e 0xd56041e4 0xa2677172
+	0x3c03e4d1 0x4b04d447 0xd20d85fd 0xa50ab56b
+	0x35b5a8fa 0x42b2986c 0xdbbbc9d6 0xacbcf940
+	0x32d86ce3 0x45df5c75 0xdcd60dcf 0xabd13d59
+	0x26d930ac 0x51de003a 0xc8d75180 0xbfd06116
+	0x21b4f4b5 0x56b3c423 0xcfba9599 0xb8bda50f
+	0x2802b89e 0x5f058808 0xc60cd9b2 0xb10be924
+	0x2f6f7c87 0x58684c11 0xc1611dab 0xb6662d3d
+	0x76dc4190 0x01db7106 0x98d220bc 0xefd5102a
+	0x71b18589 0x06b6b51f 0x9fbfe4a5 0xe8b8d433
+	0x7807c9a2 0x0f00f934 0x9609a88e 0xe10e9818
+	0x7f6a0dbb 0x086d3d2d 0x91646c97 0xe6635c01
+	0x6b6b51f4 0x1c6c6162 0x856530d8 0xf262004e
+	0x6c0695ed 0x1b01a57b 0x8208f4c1 0xf50fc457
+	0x65b0d9c6 0x12b7e950 0x8bbeb8ea 0xfcb9887c
+	0x62dd1ddf 0x15da2d49 0x8cd37cf3 0xfbd44c65
+	0x4db26158 0x3ab551ce 0xa3bc0074 0xd4bb30e2
+	0x4adfa541 0x3dd895d7 0xa4d1c46d 0xd3d6f4fb
+	0x4369e96a 0x346ed9fc 0xad678846 0xda60b8d0
+	0x44042d73 0x33031de5 0xaa0a4c5f 0xdd0d7cc9
+	0x5005713c 0x270241aa 0xbe0b1010 0xc90c2086
+	0x5768b525 0x206f85b3 0xb966d409 0xce61e49f
+	0x5edef90e 0x29d9c998 0xb0d09822 0xc7d7a8b4
+	0x59b33d17 0x2eb40d81 0xb7bd5c3b 0xc0ba6cad
+	0xedb88320 0x9abfb3b6 0x03b6e20c 0x74b1d29a
+	0xead54739 0x9dd277af 0x04db2615 0x73dc1683
+	0xe3630b12 0x94643b84 0x0d6d6a3e 0x7a6a5aa8
+	0xe40ecf0b 0x9309ff9d 0x0a00ae27 0x7d079eb1
+	0xf00f9344 0x8708a3d2 0x1e01f268 0x6906c2fe
+	0xf762575d 0x806567cb 0x196c3671 0x6e6b06e7
+	0xfed41b76 0x89d32be0 0x10da7a5a 0x67dd4acc
+	0xf9b9df6f 0x8ebeeff9 0x17b7be43 0x60b08ed5
+	0xd6d6a3e8 0xa1d1937e 0x38d8c2c4 0x4fdff252
+	0xd1bb67f1 0xa6bc5767 0x3fb506dd 0x48b2364b
+	0xd80d2bda 0xaf0a1b4c 0x36034af6 0x41047a60
+	0xdf60efc3 0xa867df55 0x316e8eef 0x4669be79
+	0xcb61b38c 0xbc66831a 0x256fd2a0 0x5268e236
+	0xcc0c7795 0xbb0b4703 0x220216b9 0x5505262f
+	0xc5ba3bbe 0xb2bd0b28 0x2bb45a92 0x5cb36a04
+	0xc2d7ffa7 0xb5d0cf31 0x2cd99e8b 0x5bdeae1d
+	0x9b64c2b0 0xec63f226 0x756aa39c 0x026d930a
+	0x9c0906a9 0xeb0e363f 0x72076785 0x05005713
+	0x95bf4a82 0xe2b87a14 0x7bb12bae 0x0cb61b38
+	0x92d28e9b 0xe5d5be0d 0x7cdcefb7 0x0bdbdf21
+	0x86d3d2d4 0xf1d4e242 0x68ddb3f8 0x1fda836e
+	0x81be16cd 0xf6b9265b 0x6fb077e1 0x18b74777
+	0x88085ae6 0xff0f6a70 0x66063bca 0x11010b5c
+	0x8f659eff 0xf862ae69 0x616bffd3 0x166ccf45
+	0xa00ae278 0xd70dd2ee 0x4e048354 0x3903b3c2
+	0xa7672661 0xd06016f7 0x4969474d 0x3e6e77db
+	0xaed16a4a 0xd9d65adc 0x40df0b66 0x37d83bf0
+	0xa9bcae53 0xdebb9ec5 0x47b2cf7f 0x30b5ffe9
+	0xbdbdf21c 0xcabac28a 0x53b39330 0x24b4a3a6
+	0xbad03605 0xcdd70693 0x54de5729 0x23d967bf
+	0xb3667a2e 0xc4614ab8 0x5d681b02 0x2a6f2b94
+	0xb40bbe37 0xc30c8ea1 0x5a05df1b 0x2d02ef8d
+)
+
+CRC_INIT=0
+
+_MASK=0xFFFFFFFF
+
+#
+# Update CRC-32 checksum with data.
+# Echo the 32-bit updated CRC-32 to stdout.
+#
+# $1	32-bit checksum to update
+# $2	reference to DATA byte array
+#
+# return:
+# 1:	wrong argument
+#
+crc32_update() {
+	if [ $# -ne 2 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare +x crc=\${${1}}
+	eval declare -a +x data=(\${$2[@]})
+
+	crc=$((${crc} ^ _MASK))
+	for byte in ${data[@]}; do
+		table_index=$(( (${crc} ^ ${byte}) & 0xff ))
+		crc=$(( (${CRC32_TABLE[${table_index}]} ^ (${crc} >> 8)) & _MASK ))
+	done
+
+	echo $((${crc} ^ _MASK))
+
+	return 0
+}
+
+#
+# Finalize CRC-32 checksum.
+# Echo the 32-bit finalized CRC-32 to stdout.
+#
+# $1	32-bit checksum to finalize
+#
+# return:
+# 1:	wrong argument
+#
+crc32_finalize() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare +x crc=\${${1}}
+
+	echo $((${crc} & _MASK))
+
+	return 0
+}
+
+#
+# convert a given architecture to a list of possible
+# binery prefixes to find related cross tools
+#
+# $1	architecture (string)
+#
+# return:
+# 1:	wrong argument
+# 2:	error in value, ex. unknown arch
+#
+oxnasblob_arch2prefix() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	case "$1" in
+	    "ARMv5")
+		echo "arm-v5te-linux-gnueabi arm-unknown-linux-gnueabi arm-unknown-linux-gnueabihf arm-unknown-linux arm-linux-gnueabi arm-linux-gnueabihf arm-linux"
+		;;
+	    *)
+		error "unknown architecture"
+		return 2
+		;;
+	esac
+
+	return 0
+}
+
+#
+# convert a given abbreviation to a valid type number
+#
+# $1	name (string)
+#
+# return:
+# 1:	wrong argument
+#
+payload_abbr2type() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	case "$1" in
+	    "Standalone")
+		echo "0x0100"
+		;;
+#	    "reserved_for_propritary_kernel")
+#		echo "0x0200"
+#		;;
+	    "eCos")
+		echo "0x0300"
+		;;
+	    "FreeRTOS")
+		echo "0x0400"
+		;;
+	    "U-Boot")
+		echo "0x0500"
+		;;
+	    "Linux")
+		echo "0x0600"
+		;;
+	    *)
+		echo "0x0000"
+		;;
+	esac
+
+	return 0
+}
+
+#
+# generate NOP instruction code and write to stdout
+#
+# $1	reference to PROG array
+#
+# return:
+# 1:	wrong arguments
+#
+oxnasblob_gen_nopstub() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare -a +x p=(\${$1[@]})
+
+	cat <<EOF
+	.section .text
+
+	.org 0
+	.align 2
+
+	.global nopstub
+	.func nopstub
+
+nopstub:			/* pre-payload NOP instruction */
+	nop
+
+_pl_data:			/* start data */
+
+	.end nopstub
+EOF
+}
+
+#
+# generate extended NOP instruction code and write to stdout
+#
+# $1	reference to PROG array
+# $2	reference to PAYLOAD array
+# $3	reference to BLOB array
+#
+# return:
+# 1:	wrong arguments
+#
+oxnasblob_gen_extnopstub() {
+	if [ $# -ne 3 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare -a +x p=(\${$1[@]})
+	eval declare -a +x pl=(\${$2[@]})
+	eval declare -i +x cv=(\${$3[$VERS]})
+
+	{
+		cat <<EOF
+	.nolist
+	/*
+	 * payload header structure on offset __plo:
+	 *
+	 *	offset	name	type		description
+	 * -------------------------------------------------------------------
+	 *	0x00	__plv	hword		version of payload header
+	 *	0x02	__plt	hword		type of payload data
+	 *	0x04	__plu	word		reserved for user data
+	 *	0x10	__pli	char[32]	name string of payload data
+	 *	0x30	__plb	char[32]	builddate string of payload data
+	 *	0x50	__pld	word[]		payload data
+	 *
+	 * payload header versions on offset __plv = __plo + 0x00:
+	 *
+	 *	value		meaning
+	 * -------------------------------------------------------------------
+	 *	0x0000		unknown header version
+	 *	0x0100		V1 (current)
+	 *
+	 * payload data types on offset __plt = __plo + 0x02:
+	 *
+	 *	value		meaning
+	 * -------------------------------------------------------------------
+	 *	0x0000		unknown payload data
+	 *	0x0100		Xilinx standalone (binary)
+	 *	0x0101			reserved for SREC
+	 *	0x01xx			reserved for future format
+	 *	0x0200		reserved (binary)
+	 *	0x0201			reserved for SREC
+	 *	0x02xx			reserved for future format
+	 *	0x0300		FSF RedBoot/eCos (binary)
+	 *	0x0301			reserved for SREC
+	 *	0x03xx			reserved for future format
+	 *	0x0400		FreeRTOS/SafeRTOS (binary)
+	 *	0x0401			reserved for SREC
+	 *	0x04xx			reserved for future format
+	 *	0x0500		U-Boot (binary)
+	 *	0x0501			reserved for SREC
+	 *	0x05xx			reserved for future format
+	 *	0x0600		Linux Kernel (binary)
+	 *	0x0601			reserved for SREC
+	 *	0x06xx			reserved for future format
+	 */
+	.list
+
+	.print "--------------------------------------------------"
+	.print "header version: @@HEADER_VERSION@@"
+	.print "content type:   @@PAYLOAD_TYPE@@"
+	.print "ident string:   @@PAYLOAD_IDENT@@"
+	.print "build date:     @@PAYLOAD_BUILD@@"
+
+	.equiv	__plo, 0x10
+	.equiv	__plv, 0x00
+	.equiv	__plt, 0x02
+	.equiv	__plu, 0x04
+	.equiv	__pli, 0x10
+	.equiv	__plb, 0x30
+	.equiv	__pld, 0x50
+
+	.section .text
+
+	.org 0
+	.align 2
+
+	.global nopstub
+	.func nopstub
+
+nopstub:
+	nop
+
+jumpstub:
+	add	pc, pc, #_pl_nop - jumpstub - 4
+
+	/*
+	 * payload head (ELF image meta informations)
+	 */
+	.org __plo
+payload:
+
+	.org __plo + __plv
+_pl_version:			/* header version (code see above) */
+	.hword @@HEADER_VERSION@@
+
+	.org __plo + __plt
+_pl_type:			/* data type (code see above) */
+	.hword @@PAYLOAD_TYPE@@
+
+	.org __plo + __plu
+_pl_user:			/* user data (reserved) */
+	.word @@PAYLOAD_USER0@@
+	.word @@PAYLOAD_USER1@@
+	.word @@PAYLOAD_USER2@@
+
+	.org __plo + __pli
+_pl_ident:			/* data ident string */
+	.asciz "@@PAYLOAD_IDENT@@"
+
+	.org __plo + __plb
+_pl_builddate:			/* blob builddate string */
+	.asciz "@@PAYLOAD_BUILD@@"
+
+	.org __plo + __pld
+_pl_nop:			/* pre-payload NOP instruction */
+	nop
+
+_pl_data:			/* start data */
+
+	.end nopstub
+EOF
+	} | ${p[$SED]} \
+		-e "s|@@HEADER_VERSION@@|${cv:=0}|g" \
+		-e "s|@@PAYLOAD_TYPE@@|${pl[$TYPE]:=0}|g" \
+		-e "s|@@PAYLOAD_USER0@@|${pu0:=0}|g" \
+		-e "s|@@PAYLOAD_USER1@@|${pu1:=0}|g" \
+		-e "s|@@PAYLOAD_USER2@@|${pu1:=0}|g" \
+		-e "s|@@PAYLOAD_IDENT@@|${pl[$NAME]:="<unknown_ident>"}|g" \
+		-e "s|@@PAYLOAD_BUILD@@|${pl[$DATE]:="<unknown_blddate>"}|g" \
+
+}
+
+#
+# generate PIC bootstub code and write to stdout
+#
+# $1	reference to PROG array
+# $2	reference to PAYLOAD array
+# $3	reference to BLOB array
+#
+# return:
+# 1:	wrong arguments
+#
+oxnasblob_gen_bootstub() {
+	if [ $# -ne 3 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare -a +x p=(\${$1[@]})
+	eval declare -a +x pl=(\${$2[@]})
+	eval declare -a +x bl=(\${$3[@]})
+	declare +x asv=$(${p[$CAS]} --version | \
+			${p[$AWK]} '{if(NR==1){print $0}}')
+	declare +x asc=$(${p[$CAS]} --version | \
+			${p[$AWK]} '{if(NR==2){print $0}}')
+	declare +x ocv=$(${p[$COCP]} --version | \
+			${p[$AWK]} '{if(NR==1){print $0}}')
+	declare +x occ=$(${p[$COCP]} --version | \
+			${p[$AWK]} '{if(NR==2){print $0}}')
+	declare +x odv=$(${p[$CODP]} --version | \
+			${p[$AWK]} '{if(NR==1){print $0}}')
+	declare +x odc=$(${p[$CODP]} --version | \
+			${p[$AWK]} '{if(NR==2){print $0}}')
+	declare +x szv=$(${p[$CSIZE]} --version | \
+			${p[$AWK]} '{if(NR==1){print $0}}')
+	declare +x szc=$(${p[$CSIZE]} --version | \
+			${p[$AWK]} '{if(NR==2){print $0}}')
+
+	version ".title \"" "\""
+	echo ".sbttl \"PIC bootstub code for OXNAS boot rom\""
+	echo
+	version ".print \"" "\""
+	copyright ".print \"" "\""
+
+	{
+		cat <<EOF
+
+	.print "--------------------------------------------------"
+	.print "@@CROSS_AS_VERS@@"
+	.print "@@CROSS_AS_COPY@@"
+	.print "@@CROSS_AS@@"
+	.print "@@CROSS_OBJCOPY@@"
+	.print "@@CROSS_OBJDUMP@@"
+	.print "@@CROSS_SIZE@@"
+
+	.nolist
+	/*
+	 * PIC bootstub code for OXNAS boot rom (oxnas-boot-tools compatible)
+	 *
+	 * This code snipped is a very simple blob for OXNAS boot rom. The
+	 * blob will executed as expacted as PIC.
+	 *
+	 * TODO: We need more informations about the OXNAS boot rom.
+	 *	 Unfortunately it is closed under NDA.
+	 */
+
+	/*
+	 * The payload data consist of a header with meta informations and
+	 * the user data itself together. The payload header begins on the
+	 * payload offset __plo. The user data are at the last entry of the
+	 * payload header structure on offset __pld.
+	 *
+	 * NOTE: The first assembler mnemonic at __pld inside the payload
+	 *	 data have to be a NOP !!! You have to solve this outside
+	 *	 the bootstub code and concatenate an already and proper
+	 *	 preperated payload data array.
+	 *
+	 * payload header structure on offset __plo:
+	 *
+	 *	offset	name	type		description
+	 * -------------------------------------------------------------------
+	 *	0x00	__pls	word		size of payload data
+	 *	0x04	__plic	word		CRC-32 of payload data
+	 *	0x08	__plhc	word		CRC-32 of this header data
+	 *	0x0c	__pld	word[]		payload data
+	 *
+	 */
+	.list
+
+	.print "--------------------------------------------------"
+	.print "blob crc:       @@BLOB_CRC@@ (precalculated)"
+	.print "--------------------------------------------------"
+	.print "payload addr:   @@PAYLOAD_BASE@@ (unused)"
+	.print "payload size:   @@PAYLOAD_SIZE@@"
+	.print "payload crc:    @@PAYLOAD_CRC@@"
+
+	.equiv	__plo,	0x30
+	.equiv	__pls,	0x00
+	.equiv	__plic,	0x04
+	.equiv	__plhc,	0x08
+	.equiv	__pld,	0x0c
+
+	.section .text
+
+	.org 0
+	.align 2
+
+	.global _start
+	.global bootstub
+	.func bootstub
+
+_start:
+bootstub:
+	/* skip the OXNAS blob and jump to first payload instruction */
+	add	pc, pc, #_pl_data - bootstub - 4
+
+	/*
+	 * payload head (ELF image meta informations)
+	 */
+	.org __plo
+payload:
+
+	.org __plo + __pls
+_pl_size:			/* data size to copy by OXNAS boot rom */
+	.word @@PAYLOAD_SIZE@@
+
+	.org __plo + __plic
+_pl_icrc:			/* data CRC-32 to check by OXNAS boot rom */
+	.word @@PAYLOAD_CRC@@
+
+	.org __plo + __plhc
+_pl_hcrc:			/* header CRC-32 to check by OXNAS boot rom */
+	.word @@BLOB_CRC@@
+
+	.org __plo + __pld
+_pl_data:			/* data start */
+
+	/* first assembler mnemonic here at this place HAVE TO be a NOP */
+
+	.end bootstub
+EOF
+	} | ${p[$SED]} \
+		-e "s|@@CROSS_AS@@|${p[$CAS]:=as}|g" \
+		-e "s|@@CROSS_AS_VERS@@|${asv:=as-version}|g" \
+		-e "s|@@CROSS_AS_COPY@@|${asc:=as-copyright}|g" \
+		-e "s|@@CROSS_OBJCOPY@@|${p[$COCP]:=objcopy}|g" \
+		-e "s|@@CROSS_OBJCOPY_VERS@@|${ocv:=objcopy-version}|g" \
+		-e "s|@@CROSS_OBJCOPY_COPY@@|${occ:=objcopy-copyright}|g" \
+		-e "s|@@CROSS_OBJDUMP@@|${p[$CODP]:=objdump}|g" \
+		-e "s|@@CROSS_OBJDUMP_VERS@@|${odv:=objdump-version}|g" \
+		-e "s|@@CROSS_OBJDUMP_COPY@@|${odc:=objdump-copyright}|g" \
+		-e "s|@@CROSS_SIZE@@|${p[$CSIZE]:=size}|g" \
+		-e "s|@@CROSS_SIZE_VERS@@|${szv:=size-version}|g" \
+		-e "s|@@CROSS_SIZE_COPY@@|${szc:=size-copyright}|g" \
+		-e "s|@@PAYLOAD_BASE@@|${pl[$BASE]}|g" \
+		-e "s|@@PAYLOAD_SIZE@@|${pl[$SIZE]}|g" \
+		-e "s|@@PAYLOAD_CRC@@|${pl[$PCRC]}|g" \
+		-e "s|@@BLOB_CRC@@|${bl[$BCRC]}|g"
+}
+
+#
+# generate and assemble payload code with pre-paylod NOP instruction
+#
+# $1	reference to PROG array
+# $2	reference to PAYLOAD array
+# $3	reference to BLOB array
+#
+# return:
+# 1:	wrong argument
+# 2:	permission denied
+#	can not read from PAYLOAD[$BIN]
+#
+oxnasblob_assembly_prepayloadnop() {
+	if [ $# -ne 3 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	eval declare -a +x p=(\${$1[@]})
+	eval declare -a +x pl=(\${$2[@]})
+	eval declare -a +x bl=(\${$3[@]})
+	eval declare +x comp=(\${$3[$COMP]})
+
+	if [ ! -r ${pl[$BIN]} ]; then
+		error "can not read file: ${pl[$BIN]}"
+		return 2
+	fi
+
+	# generate/assemble nopstub
+	if [ "x$comp" == "xstrict" ]; then
+		oxnasblob_gen_nopstub p
+	else
+		oxnasblob_gen_extnopstub p pl bl
+	fi | ${p[$CAS]} -o ${pl[$GELF]}.o -- &&
+	FILES_TO_REMOVE+=("${pl[$GELF]}.o") &&
+	${p[$COCP]} --set-start 0 \
+		--adjust-section-vma=.text=0 \
+		--adjust-section-vma=.data=0 \
+		--adjust-section-vma=.bss=0 \
+		-O ${pl[$TAEN]} ${pl[$GELF]}.o ${pl[$GELF]} &&
+	_pl_data=$(${p[$CODP]} -t ${pl[$GELF]} | \
+		${p[$AWK]} '/_pl_data$/{ print "0x" $1 }') &&
+	${p[$COCP]} --add-section=.pld=${pl[$BIN]} \
+		--adjust-section-vma=.pld=${_pl_data} \
+		--set-section-flags=.pld=alloc,load,data ${pl[$GELF]} &&
+	${p[$COCP]} -O binary ${pl[$GELF]} ${pl[$BIN]} || return 1
+
+	return 0
+}
+
+#
+# generate and assemble blob code
+#
+# $1	reference to PROG array
+# $2	reference to PAYLOAD array
+# $3	reference to BLOB array
+#
+# return:
+# 1:	wrong argument
+# 2:	permission denied
+#	can not read from PAYLOAD[$BIN]
+#
+oxnasblob_assembly_blob() {
+	if [ $# -ne 3 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	eval declare -a +x p=(\${$1[@]})
+	eval declare -a +x pl=(\${$2[@]})
+	eval declare -a +x bl=(\${$3[@]})
+
+	if [ ! -r ${pl[$BIN]} ]; then
+		error "can not read file: ${pl[$BIN]}"
+		return 2
+	fi
+
+	# generate/assemble bootstub
+	oxnasblob_gen_bootstub p pl bl | \
+		${p[$CAS]} -adhls=${bl[$OUTP]}.lst -o ${bl[$OUTP]}.o -- &&
+	FILES_TO_REMOVE+=("${bl[$OUTP]}.o") &&
+	${p[$COCP]} --set-start ${bl[$ADDR]:=0} \
+		--adjust-section-vma=.text=${bl[$ADDR]:=0} \
+		--adjust-section-vma=.data=${bl[$ADDR]:=0} \
+		--adjust-section-vma=.bss=${bl[$ADDR]:=0} \
+		-O ${pl[$TAEN]} ${bl[$OUTP]}.o ${bl[$OUTP]}.elf &&
+	_pl_data=$(${p[$CODP]} -t ${bl[$OUTP]}.elf | \
+		${p[$AWK]} '/_pl_data$/{ print "0x" $1 }') &&
+	${p[$COCP]} --add-section=.pld=${pl[$BIN]} \
+		--adjust-section-vma=.pld=${_pl_data} \
+		--set-section-flags=.pld=alloc,load,data ${bl[$OUTP]}.elf &&
+	${p[$COCP]} -O binary ${bl[$OUTP]}.elf ${bl[$OUTP]}.bin &&
+	${p[$COCP]} -O srec ${bl[$OUTP]}.elf ${bl[$OUTP]}.srec || return 1
+
+	return 0
+}
+
+#
+# generate crc-32 from blob code
+#
+# $1	reference to PROG array
+# $2	reference to BLOB array
+#
+# return:
+# 1:	wrong argument
+# 2:	permission denied
+#	can not read from BLOB[$OUTP].elf
+#	can not read from BLOB[$OUTP].bin
+#	can not write to BLOB[$OUTP].bin
+#
+oxnasblob_gencrc_blob() {
+	if [ $# -ne 2 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	declare -a BIN_DATA
+	eval declare -a +x p=(\${$1[@]})
+	eval declare +x elf=\${$2[$OUTP]}.elf
+	eval declare +x bin=\${$2[$OUTP]}.bin
+
+	if [ ! -r ${elf} ]; then
+		error "can not read file: ${elf}"
+		return 2
+	fi
+
+	if [ ! -r ${bin} ]; then
+		error "can not read file: ${bin}"
+		return 2
+	fi
+
+	if [ ! -w ${bin} ]; then
+		error "can not write file: ${bin}"
+		return 2
+	fi
+
+	_pl_hcrc=$(${p[$CODP]} -t ${elf} | \
+		${p[$AWK]} '/_pl_hcrc$/{ print "0x" $1 }')
+
+	# calculate CRC-32 from bin file
+	BIN_DATA=($(od -v -A n -t d1 -N ${_pl_hcrc} ${bin}))
+	CRC=$(crc32_update CRC_INIT BIN_DATA)
+	CRC=$(crc32_finalize CRC)
+
+	eval $2[$BCRC]=\$\(printf "0x%x" \${CRC}\)
+
+	return 0
+}
+
+#
+# parse payload data file and generate binary image
+#
+# $1	reference to PROG array
+# $2	reference to PAYLOAD array
+# $3	reference to BLOB array
+#
+# return:
+# 1:	wrong arguments
+# 2:	permission denied
+#	can not read from PAYLOAD[$ELF]
+#	can not write to PAYLOAD[$BIN]
+# 3:	FATAL: elf code and binary image size differ
+#
+oxnasblob_elf2bin() {
+	if [ $# -ne 3 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	declare -a BIN_DATA
+	eval declare -a +x p=(\${$1[@]})
+	eval declare +x elf=\${$2[$ELF]}
+	eval declare +x bin=\${$2[$BIN]}
+
+	if [ ! -r ${elf} ]; then
+		error "can not read file: ${elf}"
+		return 2
+	fi
+
+	if [ ! -w ${bin} ]; then
+		error "can not write file: ${bin}"
+		return 2
+	fi
+
+	${p[$COCP]} --gap-fill=0xff -O binary ${elf} ${bin}
+
+	# target endianess from elf file for blob elf generator
+	declare +x taen=$(${p[$CODP]} -a ${elf} | \
+			${p[$AWK]} '/:/{ print $4 }')
+	eval $2[$TAEN]=\$\(printf "%s" \${taen}\)
+
+	# base address from elf file
+	declare +x base=$(${p[$CODP]} -f ${elf} | \
+			${p[$AWK]} '/^start address/{ print $3 }')
+	eval $2[$BASE]=\$\(printf "0x%x" \${base}\)
+
+	# expand bin file with a pre-NOP instruction
+	eval oxnasblob_assembly_prepayloadnop $1 $2 $3
+
+	# code size from bin file
+	declare +x size=$(${p[$CSIZE]} -t -d --target binary ${bin} | \
+			${p[$AWK]} '/TOTALS/{ print $4 }')
+
+	# size of bin file for comparison
+	declare +x stsize=$(${p[$ST]} ${bin} | \
+			${p[$AWK]} '/Size:/{ print $2 }')
+
+	# size comparison elf vs. bin to ensure correct conversion
+	if [ ${size} -ne ${stsize} ]; then
+		error "size differ: ${size} != ${stsize}"
+		return 3
+	fi
+
+	eval $2[$SIZE]=\$\(printf "0x%x" \${size}\)
+
+	# calculate CRC-32 from bin file
+	BIN_DATA=($(od -v -A n -t d1 ${bin}))
+	CRC=$(crc32_update CRC_INIT BIN_DATA)
+	CRC=$(crc32_finalize CRC)
+
+	eval $2[$PCRC]=\$\(printf "0x%x" \${CRC}\)
+
+	return 0
+}
+
+#
+# check arrays and expand defaults on demand
+#
+# $1	reference to PAYLOAD array
+# $2	reference to BLOB array
+#
+# return:
+# 1:	wrong argument
+# 2:	error in value, ex. unknown type
+# 3:	error in array size, missing elements
+#
+oxnasblob_checkup() {
+	if [ $# -ne 2 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	declare +x el
+	eval declare +x type=\${$1[$TYPE]} # content type
+	eval declare +x name=\${$1[$NAME]} # ident string
+	eval declare +x date=\${$1[$DATE]} # build date
+	eval declare +x vers=\${$2[$VERS]} # header version
+	eval declare +x outp=\${$2[$OUTP]} # blob output name
+	eval declare +x addr=\${$2[$ADDR]} # bootstub realoc address
+
+	# convert type number to hex
+	if [ -n ${type} ]; then
+		eval $1[$TYPE]=\$\(printf "0x%04x" ${type}\)
+	fi
+
+	# if unset, set payload name to elf file name
+	if [ -z ${name} -o "${name}" == "none" ]; then
+		eval name=\$\(basename \${$1[$ELF]}\)
+	fi
+
+	# cut off payload name to 31 characters (one left for \0)
+	if [ -n ${name} ]; then
+		eval $1[$NAME]=\$\(printf "%0.31s" ${name}\)
+	fi
+
+	# cut off build date to 31 characters (one left for \0)
+	if [ -n ${date} ]; then
+		eval $1[$DATE]=\$\(printf "%0.31s" ${date}\)
+	fi
+
+	# convert type number to hex
+	if [ -n ${vers} ]; then
+		eval $2[$VERS]=\$\(printf "0x%04x" ${vers}\)
+	fi
+
+	# if unset, set blob output to 'oxnasblob'
+	if [ -z ${outp} -o "${outp}" == "none" ]; then
+		eval $2[$OUTP]="oxnasblob"
+	fi
+
+	# if unset, set realocation address to zero
+	if [ -z ${addr} ]; then
+		eval echo $2[$ADDR]=0
+	fi
+
+	# check if known content type
+	if [ "${type}" == "0x0000" ]; then
+		error "unknown type ${type}"
+		return 2
+	fi
+
+	# check expacted elements of PAYLOAD
+	eval el=\${#$1[@]}
+	if [ ${el} -ne ${PAYLOAD_NUM} ]; then
+		error "missing elements in PAYLOAD" \
+			"(${el} != ${PAYLOAD_NUM})"
+		eval error "PAYLOAD=\(\${$1[@]}\)"
+		return 3
+	fi
+
+	# check expacted elements of BLOB
+	eval el=\${#$2[@]}
+	if [ ${el} -ne ${BLOB_NUM} ]; then
+		error "missing elements in BLOB" \
+			"(${el} != ${BLOB_NUM})"
+		eval error "BLOB=\(\${$2[@]}\)"
+		return 3
+	fi
+
+	return 0
+}
+
+#
+# fill and check array for directly executable programs
+#
+# $1	reference to PROGS array
+#
+# return:
+# 1:	wrong argument
+# 2:	error in value, ex. unknown arch
+# 3:	error in array size, missing elements
+#
+oxnasblob_lookup_progs() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	declare +x prefixes
+	declare +x pfx
+	declare +x bin
+	declare +x prog
+	declare +x el
+	declare -i +x i
+
+	# looking for standard binaries
+	eval $1[$AWK]=\$\(which awk\)
+	eval $1[$SED]=\$\(which sed\)
+	eval $1[$ST]=\$\(which stat\)
+
+	# get prefixes to use for cross-tool lookup
+	eval prefixes=\$\(oxnasblob_arch2prefix "\${$1[$ARCH]}"\)
+	if [ $? -ne 0 ]; then
+		eval error "unknown architecture \${$1[$ARCH]}"
+		return 2
+	fi
+
+	# looking for cross-tool binaries
+	let i=$CAS
+	for bin in ${CROSS_PROGS}; do
+		for pfx in ${prefixes}; do
+			prog=$(which ${pfx}-${bin})
+			if [ -n "${prog}" ]; then
+				eval $1[$i]="${prog}"
+				break
+			fi
+		done
+		i+=1
+	done
+
+	# check expacted elements of PROGS
+	eval el=\${#$1[@]}
+	if [ ${el} -ne ${PROGS_NUM} ]; then
+		error "missing elements in PROGS" \
+			"(${el} != ${PROGS_NUM})"
+		eval error "PROGS=\(\${$1[@]}\)"
+		eval hint_tools "\${$1[$ARCH]}" >&2
+		return 3
+	fi
+
+	return 0
+}
+
+main() {
+	declare -a +x PROGS
+	declare -a +x PAYLOAD
+	declare -a +x BLOB
+
+	PROGS[$ARCH]="ARMv5"
+	oxnasblob_lookup_progs PROGS || exit 1
+
+	init_array PAYLOAD PAYLOAD_NUM
+	PAYLOAD[$TYPE]=0
+	PAYLOAD[$DATE]=$(date "+%D-%T")
+
+	init_array BLOB BLOB_NUM
+	BLOB[$VERS]=${HEADER_VERSION}
+	BLOB[$ADDR]=0
+
+	# default output oxnasblob
+	DO_OUTPUT="oxnasblob"
+
+	while getopts ":bhn:o:st:v" opt; do
+		case "${opt}" in
+		    t)
+			PAYLOAD[$TYPE]=$(payload_abbr2type "${OPTARG}")
+			;;
+		    n)
+			PAYLOAD[$NAME]="${OPTARG}"
+			;;
+		    o)
+			BLOB[$OUTP]="${OPTARG}"
+			;;
+		    b)
+			DO_OUTPUT="bootstub"
+			;;
+		    s)
+			BLOB[$COMP]="strict"
+			;;
+		    h)
+			version; copyright; echo
+			usage 0
+			;;
+		    v)
+			version; copyright; echo
+			exit 0
+			;;
+		    *)
+			version; copyright; echo
+			usage
+			;;
+		esac
+	done
+
+	shift $((${OPTIND}-1))
+	PAYLOAD[$ELF]="${1}"
+	[ -z ${PAYLOAD[$ELF]} ] && usage
+
+	PAYLOAD[$BIN]=$(mktemp -t payload.bin.XXXXXXXXXX)
+	if [ ! -w ${PAYLOAD[$BIN]} ]; then
+		error "can not create temporary file: ${PAYLOAD[$BIN]}"
+		exit 1
+	fi
+
+	FILES_TO_REMOVE+=("${PAYLOAD[$BIN]}") &&
+
+	PAYLOAD[$GELF]=$(mktemp -t payload.elf.XXXXXXXXXX)
+	if [ ! -w ${PAYLOAD[$GELF]} ]; then
+		error "can not create temporary file: ${PAYLOAD[$GELF]}"
+		exit 1
+	fi
+
+	FILES_TO_REMOVE+=("${PAYLOAD[$GELF]}") &&
+
+	oxnasblob_checkup PAYLOAD BLOB &&
+	oxnasblob_elf2bin PROGS PAYLOAD BLOB &&
+	oxnasblob_checkup PAYLOAD BLOB &&
+	case $DO_OUTPUT in
+
+	    bootstub)
+		BLOB[$OUTP]=$(mktemp -u -t oxnasblob.XXXXXXXXXX) &&
+		oxnasblob_assembly_blob PROGS PAYLOAD BLOB >/dev/null &&
+		oxnasblob_gencrc_blob PROGS BLOB &&
+		oxnasblob_gen_bootstub PROGS PAYLOAD BLOB
+		;;
+
+	    oxnasblob)
+		oxnasblob_assembly_blob PROGS PAYLOAD BLOB >/dev/null &&
+		oxnasblob_gencrc_blob PROGS BLOB &&
+		oxnasblob_assembly_blob PROGS PAYLOAD BLOB &&
+		echo "payload header: @$(${PROGS[$CODP]} -t ${BLOB[$OUTP]}.elf | \
+			${PROGS[$AWK]} '/payload$/{ print "0x" $1 }')" &&
+		echo "payload data:   @$(${PROGS[$CODP]} -t ${BLOB[$OUTP]}.elf | \
+			${PROGS[$AWK]} '/_pl_data$/{ print "0x" $1 }')"
+		;;
+
+	    *)	;;
+	esac || usage
+
+	exit 0
+}
+
+# regist signal handler and startup main()
+trap onexit INT TERM EXIT
+main "$@"
