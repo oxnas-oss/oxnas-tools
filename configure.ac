@@ -3,7 +3,7 @@
 AC_PREREQ(2.65)
 
 define(PNAME,[OXNAS Tools])dnl
-define(PVERS,[0.0.0])dnl
+define(PVERS,[1.0.0])dnl
 define(TNAME,[oxnas-tools])dnl
 
 syscmd(test -e .svn)dnl
