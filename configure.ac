@@ -3,7 +3,7 @@
 AC_PREREQ(2.65)
 
 define(PNAME,[OXNAS Tools])dnl
-define(PVERS,[1.0.0])dnl
+define(PVERS,[1.1.0])dnl
 define(TNAME,[oxnas-tools])dnl
 
 syscmd(test -e .svn)dnl
@@ -19,7 +19,7 @@ AC_INIT(PNAME,PVERS,[oxnas-tools-bug@li-pro.net],TNAME,[http://www.li-pro.de/soh
 AC_CANONICAL_TARGET
 #AC_USE_SYSTEM_EXTENSIONS
 
-AC_CONFIG_SRCDIR([src/mkoxnasblob.sh.in])
+AC_CONFIG_SRCDIR([src/Makefile.am])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
 
