@@ -1,4 +1,28 @@
-commit 2e85220ebe31355898f340c84dd04301c7335f82
+commit aece26be1e27969544915d875b34ae73dfe01b53
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Tue Mar 5 16:13:09 2013 +0100
+
+    new command: setupoxnasmbr
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
+
+commit 0de382f6fa2676360b0a5a36451c1b5a73992803
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Tue Mar 5 16:12:10 2013 +0100
+
+    set to version 1.1.0
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
+
+commit 9f90d8bf27b12cb2194b1e623231034048c97306
+Author: Stephan Linz <linz@li-pro.net>
+Date:	Tue Mar 5 16:10:47 2013 +0100
+
+    add contributed code by WD and OXsemi
+
+    Signed-off-by: Stephan Linz <linz@li-pro.net>
+
+commit fd3fa4410a18056bdb9861d879d026a90ce10c9e
 Author: Stephan Linz <linz@li-pro.net>
 Date:	Thu Feb 21 19:20:53 2013 +0100
 
