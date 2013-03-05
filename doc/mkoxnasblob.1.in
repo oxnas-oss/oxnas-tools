@@ -1,6 +1,6 @@
 .\"Created with GNOME Manpages Editor Wizard
 .\"http://sourceforge.net/projects/gmanedit2
-.TH mkoxnasblob 1 "17 February 2013" "" "Generate PIC bootstub code for OXNAS"
+.TH mkoxnasblob 1 "04 March 2013" "" "Generate PIC bootstub code for OXNAS"
 
 .SH NAME
 mkoxnasblob \- Generate PIC bootstub code for Oxford SATA network storage controller (OXNAS)
@@ -27,11 +27,18 @@ command.
 The
 .B mkoxnasblob
 command will be used to create combined images that would accept by the OXNAS
-boot rom in Oxford Semiconductors OXE800 and OXE810. Moste parts of the
+boot rom in Oxford Semiconductors OXE800 and OXE810. Most parts of the
 calculation were borrowed from the oxnas boot tools v0.1 by J. J. Larworthy,
-(C) 2006, first published by Steffen Sledz on OpenEmbedded.org on 05/05/2010, see:
+(C) 2006, first published by Steffen Sledz on OpenEmbedded.org on 05/05/2010,
+and from the Western Digital MyBook World Edition GPL Source Code archive v1.18
+(origins going back to J. J. Larworthy, (C) 2005-2006 Oxford Semiconductor Ltd.), see:
 
-http://git.openembedded.org/openembedded/diff/?id=95a6933e4e744a60d0b0ba8ce0567d499135fcdc
+.IP "" 4
+- http://support.wdc.com/download/mybook/WD-GPL-v1.18.tar.bz2
+.IP ""
+- http://support.wdc.com/product/download.asp?groupid=106&sid=64&lang=en
+.IP ""
+- http://git.openembedded.org/openembedded/diff/?id=95a6933e4e744a60d0b0ba8ce0567d499135fcdc
 
 .PP
 \fBmkoxnasblob\fP generates blob.[srec|elf|bin|lst] files into the working directory.
@@ -47,7 +54,7 @@ The combined images has the following structure:
 \fB32 bit:\fP OXNAS boot rom magic key \fI0xe28ff038\fP, ARM assembler mnemonic: \fIADD PC, PC, #56 ; 0x38\fP
 .B
 .IP 0x04
-\fB44 ytes:\fP reserved, all set to zero
+\fB44 bytes:\fP reserved, all set to zero
 .B
 .IP 0x30
 \fB32 bit:\fP payload data size inclusive the pre-payload data magic key at offset 0x3C
@@ -203,7 +210,8 @@ I would be delighted to hear from you if you like this program.  Please contact 
 
 .SH THANKS
 Especial thanks go out to J. J. Larworthy and Steffen Sledz for publishing the
-oxnas boot tools.
+oxnas boot tools and to Oxford Semiconductor Ltd. for grant the right to Western
+Digital for publishing the GPL Source Code archive.
 
 .SH AUTHOR
 This manual page was written by Stephan Linz <linz@li-pro.net>

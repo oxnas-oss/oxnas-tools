@@ -1,0 +1,5 @@
+[Mon Mar  4 18:42:17 UTC 2013]
+stage1:		http://support.wdc.com/product/download.asp?groupid=106&sid=64&lang=en
+stage1:		http://support.wdc.com/download/mybook/WD-GPL-v1.18.tar.bz2
+boot-tools:	http://support.wdc.com/product/download.asp?groupid=117&sid=116&lang=en
+boot-tools:	http://download.wdc.com/gpl/WD-MyBookWorld-v1.02.14-GPL.zip
