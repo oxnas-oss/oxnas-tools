@@ -79,8 +79,10 @@ AC_CONFIG_FILES([
         src/Makefile
         doc/Makefile
 	doc/mkoxnasblob.1
+	doc/setupoxnasmbr.1
 ])
 AC_CONFIG_FILES([src/mkoxnasblob.sh],[chmod +x src/mkoxnasblob.sh])
+AC_CONFIG_FILES([src/setupoxnasmbr.sh],[chmod +x src/setupoxnasmbr.sh])
 AC_OUTPUT
 
 # ==========================================================================

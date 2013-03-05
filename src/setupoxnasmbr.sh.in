@@ -1,0 +1,398 @@
+#!/bin/bash
+#
+# (C) Copyright 2013 Li-Pro.Net
+#
+# Stephan Linz <linz@li-pro.net>
+#
+# See file CREDITS for list of people who contributed to this
+# project.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; either version 2 of
+# the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+# MA 02111-1307 USA
+#
+#set -n
+#set -x
+set -e
+
+if test ${BASH_VERSINFO[0]} -lt 3; then
+	echo "FATAL: wrong Bash version, need Bash 3 or above"
+	exit 3
+fi
+
+#
+# array of directly executable programs
+#
+AWK=0	# index for awk
+SED=1	# index for sed
+ST=2	# index for stat
+PROGS_NUM=3
+
+#
+# empty array of files we have to remove on exit
+#
+declare -a FILES_TO_REMOVE
+
+#
+# array indices for disk image data
+#
+HDIF=0	# index for disk image file name
+SCT=1	# index for start sector for blob
+CNT=2	# index for number of blob sectors
+MSZ=3	# index for maximum blob size
+MBRA=4	# index for the MBR address to store boot rom parameters
+MBRD=5	# index for the MBR data byte sequence of boot rom parameters
+HDIMG_NUM=6
+
+#
+# array indices for global blob informations
+#
+BLOBF=0	# index for blob image file name
+BSZ=1   # index for blob size
+BLOB_NUM=2
+
+#
+# default disk image values
+#
+PRI_MBRA=0x1B0
+SEC_MBRA=0x1A4
+PRI_SCT=1
+SEC_SCT=10608
+PRI_AND_SEC_CNT=238
+__SCTSZ=512
+
+version() {
+	echo "$1@PACKAGE_STRING@ (@BUILDDATE@ @BUILDTIME@)$2"
+}
+
+copyright() {
+	echo "$1Copyright (C) 2013 Li-Pro.Net$2"
+	echo "$1This is free software; see the source for copying conditions.  There is NO$2"
+	echo "$1warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.$2"
+}
+
+usage() {
+	echo "Usage: $(basename $0) [-b sect] [-l sects] [-p|-s] -d hdimg blob"
+	echo "          -b ==> begin with sector (default is 1 for -p and 10608 for -s)"
+	echo "          -l ==> number of sectors that can be used (default is 238)"
+	echo "          -p ==> setup the primary boot rom section (default)"
+	echo "          -s ==> setup the secondary boot rom section"
+	echo "          -d ==> write 'blob' binary to 'hdimg' HD image"
+	echo "       $(basename $0) -h | -v"
+	echo "          -h ==> show this short help message"
+	echo "          -v ==> show version and copyright"
+	echo
+	[ -n "$1" ] && exit $1 || exit 1
+}
+
+error() {
+	echo "ERROR: ${FUNCNAME[1]}::${BASH_LINENO[0]}: $@" >&2
+}
+
+onexit() {
+	for file in ${FILES_TO_REMOVE[@]}; do
+		rm -f ${file}
+	done
+}
+
+#
+# initialze each element of an array with 'none' for given size
+#
+# $1	reference to an array
+# $2	reference to the number of elements in array
+#
+# return:
+# 1:	wrong arguments
+#
+init_array() {
+	if [ $# -ne 2 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	eval declare +x numb=(\${$2})
+	numb=$((--numb))
+
+	for el in $(seq 0 ${numb}); do
+		eval $1[$el]=none
+	done
+}
+
+#
+# convert the given 16 bit value to a printf format string
+# to generate binary output
+#
+# $1	16-bit value to convert
+#
+# return:
+# 1:    wrong argument
+#
+u16_to_binstr() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	for n in {0..1}; do
+		printf '\\x%02x' $(((${1} >> ${n} * 8) & 0xff))
+	done
+
+	return 0
+}
+
+#
+# convert the given 32 bit value to a printf format string
+# to generate binary output
+#
+# $1	32-bit value to convert
+#
+# return:
+# 1:    wrong argument
+#
+u32_to_binstr() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments (call from ${FUNCNAME[1]}::${BASH_LINENO[0]})"
+		return 1
+	fi
+
+	for n in {0..3}; do
+		printf '\\x%02x' $(((${1} >> ${n} * 8) & 0xff))
+	done
+
+	return 0
+}
+
+#
+# check arrays and expand defaults on demand
+#
+# $1	reference to PROGS array
+# $2	reference to HDIMG array
+# $3	reference to BLOB array
+#
+# return:
+# 1:	wrong argument
+# 2:	error in value, ex. unknown disk image file
+# 3:	error in array size, missing elements
+# 4:	FATAL: blob size missmatch
+#
+oxnasmbr_checkup() {
+	if [ $# -ne 3 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	declare +x el
+	eval declare -a +x p=(\${$1[@]})
+	eval declare +x hdimg=\${$2[$HDIF]} # disk image file name
+	eval declare +x kind=\${$2[$MBRA]}  # primary or secondary
+	eval declare +x bseq=\${$2[$MBRD]}  # boot params byte sequence
+	eval declare +x sect=\${$2[$SCT]}   # start sector
+	eval declare +x count=\${$2[$CNT]}  # sector count
+	eval declare +x msize=\${$2[$MSZ]}  # maximum size
+	eval declare +x blob=\${$3[$BLOBF]} # blob file name
+
+	# if unset, force an error
+	if [ -z ${hdimg} -o "${hdimg}" == "none" ]; then
+		error "unknown disk image file: ${hdimg}"
+		return 2
+	fi
+
+	# adjust wrong boot rom parameter address
+	if [ "${kind}" != "${PRI_MBRA}" -a "${kind}" != "${SEC_MBRA}" ]; then
+		eval $2[$MBRA]=none
+		eval kind=\${$2[$MBRA]}
+	fi
+
+	# if unset, set boot rom parameter address to primary (default)
+	if [ -z ${kind} -o "${kind}" == "none" ]; then
+		eval $2[$MBRA]=${PRI_MBRA}
+		eval kind=\${$2[$MBRA]}
+	fi
+
+	# if unset, set start sector to primary or secondery default
+	if [ -z ${sect} -o "${sect}" == "none" ]; then
+		if [ "${kind}" == "${PRI_MBRA}" ]; then
+			eval $2[$SCT]=${PRI_SCT}
+		else
+			eval $2[$SCT]=${SEC_SCT}
+		fi
+		eval sect=\${$2[$SCT]}
+	fi
+
+	# if unset, set number of sectors
+	if [ -z ${count} -o "${count}" == "none" ]; then
+		eval $2[$CNT]=${PRI_AND_SEC_CNT}
+		eval count=\${$2[$CNT]}
+	fi
+
+	# if unset, set maximum size for blob
+	if [ -z ${msize} -o "${msize}" == "none" ]; then
+		eval $2[$MSZ]=$((${count} * ${__SCTSZ}))
+		eval msize=\${$2[$MSZ]}
+	fi
+
+	# if unset, force an error
+	if [ -z ${blob} -o "${blob}" == "none" ]; then
+		error "unknown blob file: ${blob}"
+		return 2
+	fi
+
+	# size of bin file for comparison
+	declare +x stsize=$(${p[$ST]} ${blob} | \
+			${p[$AWK]} '/Size:/{ print $2 }')
+	eval $3[$BSZ]=${stsize}
+
+	# size comparison
+	if [ ${msize} -lt ${stsize} ]; then
+		error "size missmatch: maximum size ${msize} is lower than blob size ${stsize}"
+		return 4
+	fi
+
+	# if unset, set boot rom parameter byte sequence
+	if [ -z ${bseq} -o "${bseq}" == "none" ]; then
+		declare +x p0=$((${msize} + ${sect}))
+		declare +x p1=${sect}
+		declare +x p2=${msize}
+		eval $2[$MBRD]='$(u32_to_binstr ${p0};u32_to_binstr ${p1};u32_to_binstr ${p2})'
+		eval bseq=\${$2[$MBRD]}
+	fi
+
+	# check expacted elements of HDIMG
+	eval el=\${#$2[@]}
+	if [ ${el} -ne ${HDIMG_NUM} ]; then
+		error "missing elements in HDIMG" \
+			"(${el} != ${HDIMG_NUM})"
+		eval error "HDIMG=\(\${$2[@]}\)"
+		return 3
+	fi
+
+	# check expacted elements of BLOB
+	eval el=\${#$3[@]}
+	if [ ${el} -ne ${BLOB_NUM} ]; then
+		error "missing elements in BLOB" \
+			"(${el} != ${BLOB_NUM})"
+		eval error "BLOB=\(\${$3[@]}\)"
+		return 3
+	fi
+
+	return 0
+}
+
+#
+# fill and check array for directly executable programs
+#
+# $1	reference to PROGS array
+#
+# return:
+# 1:	wrong argument
+# 2:	error in value, ex. unknown arch
+# 3:	error in array size, missing elements
+#
+oxnasmbr_lookup_progs() {
+	if [ $# -ne 1 ]; then
+		error "wrong arguments"
+		return 1
+	fi
+
+	declare +x pfx
+	declare +x prog
+	declare +x el
+	declare -i +x i
+
+	# looking for standard binaries
+	eval $1[$AWK]=\$\(which awk\)
+	eval $1[$SED]=\$\(which sed\)
+	eval $1[$ST]=\$\(which stat\)
+
+	# check expacted elements of PROGS
+	eval el=\${#$1[@]}
+	if [ ${el} -ne ${PROGS_NUM} ]; then
+		error "missing elements in PROGS" \
+			"(${el} != ${PROGS_NUM})"
+		eval error "PROGS=\(\${$1[@]}\)"
+		return 3
+	fi
+
+	return 0
+}
+
+main() {
+	declare -a +x PROGS
+	declare -a +x HDIMG
+	declare -a +x BLOB
+
+	oxnasmbr_lookup_progs PROGS || exit 1
+
+	init_array HDIMG HDIMG_NUM
+	init_array BLOB BLOB_NUM
+
+	while getopts ":b:d:hl:psv" opt; do
+		case "${opt}" in
+		    b)
+			HDIMG[$SCT]="${OPTARG}"
+			;;
+		    d)
+			HDIMG[$HDIF]="${OPTARG}"
+			;;
+		    l)
+			HDIMG[$CNT]="${OPTARG}"
+			;;
+		    p)
+			HDIMG[$MBRA]="${PRI_MBRA}"
+			;;
+		    s)
+			HDIMG[$MBRA]="${SEC_MBRA}"
+			;;
+		    h)
+			version; copyright; echo
+			usage 0
+			;;
+		    v)
+			version; copyright; echo
+			exit 0
+			;;
+		    *)
+			version; copyright; echo
+			usage
+			;;
+		esac
+	done
+
+	shift $((${OPTIND}-1))
+	BLOB[$BLOBF]="${1}"
+	[ -z ${BLOB[$BLOBF]} ] && usage
+
+	oxnasmbr_checkup PROGS HDIMG BLOB &&
+
+	dd conv=notrunc if=${BLOB[$BLOBF]} of=${HDIMG[$HDIF]} \
+		bs=${__SCTSZ} seek=${HDIMG[$SCT]} 2>/dev/null &&
+	printf ${HDIMG[$MBRD]} | dd conv=notrunc of=${HDIMG[$HDIF]} \
+		bs=1 seek=$((${HDIMG[$MBRA]})) 2>/dev/null &&
+
+	printf "MBR:%04x: " ${HDIMG[$MBRA]} &&
+	dd conv=notrunc if=${HDIMG[$HDIF]} bs=1 count=$((3*4)) \
+		skip=$((${HDIMG[$MBRA]})) 2>/dev/null | \
+		od -v -A n -t x4 &&
+	dd conv=notrunc if=${HDIMG[$HDIF]} bs=1 count=$((3*4)) \
+		skip=$((${HDIMG[$MBRA]})) 2>/dev/null | \
+		od -v -A n -t x1 &&
+
+	echo "BLOB=(${BLOB[@]})" || usage
+
+	exit 0
+}
+
+# regist signal handler and startup main()
+trap onexit INT TERM EXIT
+main "$@"

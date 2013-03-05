@@ -1,0 +1,244 @@
+.\"Created with GNOME Manpages Editor Wizard
+.\"http://sourceforge.net/projects/gmanedit2
+.TH setupoxnasmbr 1 "04 March 2013" "" "Setup hard disk MBR for OXNAS"
+
+.SH NAME
+setupoxnasmbr \- Setup a hard disk MBR for Oxford SATA network storage controller (OXNAS)
+
+.SH SYNOPSIS
+.B setupoxnasmbr
+.RI [ options ]
+.PP
+.B setupoxnasmbr
+[ -b sect ] [ -l sects ] [-p|-s] -d hdimg blob
+.br
+.B setupoxnasmbr
+-h | -v
+.br
+
+.SH DESCRIPTION
+This manual page explains the
+.B setupoxnasmbr
+command.
+.PP
+The
+.B setupoxnasmbr
+command will be used to setup the a given disk image (hdimg) so that would
+accept by the OXNAS boot rom in Oxford Semiconductors OXE800 and OXE810. The
+command will write the primary or the secondary boot rom parameters inside
+the master boot record (MBR) and the next-stage bootloader (blob) that the
+internel OXNAS boot rom have has to load and start from corresponding sectors
+defined by the boot rom parameters. Most parts of the calculation were
+borrowed from the Western Digital MyBook World Edition GPL Source Code
+archive v1.18 (origins going back to J. J. Larworthy, (C) 2005-2006 Oxford
+Semiconductor Ltd.), see:
+
+.IP "" 4
+- http://support.wdc.com/download/mybook/WD-GPL-v1.18.tar.bz2
+.IP ""
+- http://support.wdc.com/product/download.asp?groupid=106&sid=64&lang=en
+
+.PP
+\fBsetupoxnasmbr\fP setup disk image \fIhdimg\fP inside the working directory.
+Block devices may be used, but this is untested and can cause damages on your
+physical disks.
+.PP
+\fBsetupoxnasmbr\fP will store the next-stage bootloader \fIblob\fP to the
+disk image \fIhdimg\fP. To ensure this does not collide with partitions in the
+disk image, the first partition must start at a sector behind the ones the
+next-stage bootloader occupies.
+.PP
+\fBsetupoxnasmbr\fP will never touch or create the partition table in disk image \fIhdimg\fP.
+.PP
+\fBsetupoxnasmbr\fP supports only the OXE8x0 (ARMv5) architecture (not yet the OXE820).
+.PP
+The master boot recored, that can interpreted by OXNAS boot rom, has the following structure:
+.B
+.IP offset 16
+.B type: description
+.B
+.IP 0x00
+\fB420 byte:\fP unknown content, mainly vacant with zero
+.B
+.IP 0x1A4
+\fB12 bytes:\fP secondary boot parameter block (see below)
+.B
+.IP 0x1B0
+\fB12 bytes:\fP primary boot parameter block (see below)
+.B
+.IP 0x1BC
+\fB16 bit:\fP unknown content, should be vacant with zero
+.B
+.IP 0x1BE
+\fB64 byte:\fP partition table
+.B
+.IP 0x1FE
+\fB16 bit:\fP boot signature, \fI0xaa55\fP
+.PP
+Both the pimary and the secondary boot parameter blocks have the same
+structure (see the list below). The default largeness is \fB238\fP sectors
+and can change with option \fB-l\fP. The default start sector depends on
+primary (\fB1\fP) or secondary (\fB10608\fP) setup and can change with
+option \fB-b\fP.
+.B
+.IP offset 16
+.B type: description
+.B
+.IP 0x00
+\fB32 bit:\fP next-stage bootloader start sector added with the maximum size
+(largeness) in bytes
+.br
+primary default is: start_sector + largeness_bytes = 1 + 0x1DC00 = \fB0x1DC01\fP
+.br
+secondary default is: start_sector + largeness_bytes = 10608 + 0x1DC00 = \fB0x20570\fP
+.B
+.IP 0x04
+\fB32 bit:\fP next-stage bootloader start sector
+.br
+primary default is: start_sector = \fB1\fP
+.br
+secondary default is: start_sector = \fB10608\fP (0x2970)
+.B
+.IP 0x08
+\fB32 bit:\fP next-stage bootloader maximum size (largeness) in bytes
+.br
+primary default is: largeness_bytes = \fB0x1DC00\fP
+.br
+secondary default is: largeness_bytes = \fB0x1DC00\fP
+.PP
+An default OXNAS disk image has the following boot sector structure, the
+reserved sectors in front of the sectors that the first partition occupies.
+That is the default interpretation by the the most popular next-stage
+bootloader U-Boot:
+.B
+.IP sector 16
+.B size: description
+.B
+.IP 0
+\fB1 sector:\fP master boot record (MBR)
+.br
+with partition table and the primary and secondary OXNAS boot rom parameter
+blocks (see above)
+.B
+.IP 1
+\fB238 sectors:\fP ROM Loader (next-stage bootloader) start sector
+.br
+U-Boot define is: \fIROM_LOADER_LOAD_START_SECTOR\fP
+.B
+.IP 239
+\fB16 sectors:\fP ROM Loader (next-stage bootloader) environment store sectors
+.br
+U-Boot define is: \fICFG_ENV_DISK_SECTOR\fP
+.B
+.IP 255
+\fB1 sector:\fP upgrade flag on disk
+.br
+U-Boot specifics: will be loaded to \fI0x48700000\fP
+.B
+.IP 256
+\fB44 sectors:\fP gap, mainly vacant with zero
+.B
+.IP 300
+\fB5700 sectors:\fP U-Boot Image with Linux kernel
+.br
+U-Boot specifics: will be loaded to \fI0x48500000\fP
+.B
+.IP 6000
+\fB512 sectors:\fP 256KB of upgrade rootfs image from hidden sectors (unsure)
+.br
+U-Boot specifics: will be loaded to \fI0x48700000\fP, depends on content in sector 255
+.B
+.IP 6512
+\fB4096 sectors:\fP 2MB of upgrade kernel image from hidden sectors (unsure)
+.br
+U-Boot specifics: will be loaded to \fI0x48800000\fP, depends on content in sector 255
+.B
+.IP 10608
+\fB238 sectors:\fP ROM Loader (next-stage bootloader) redundant start sector
+.br
+U-Boot define is: \fIROM_LOADER_LOAD_REDUNDANT_START_SECTOR\fP
+.B
+.IP 10846
+\fB16 sectors:\fP ROM Loader (next-stage bootloader) redundant environment store sectors
+.br
+U-Boot define is: \fICFG_ENV_DISK_REDUNDANT_SECTOR\fP
+.B
+.IP 10862
+\fB5700 sectors:\fP U-Boot Image with redundant Linux kernel
+.br
+U-Boot specifics: will be loaded to \fI0x48500000\fP
+
+.SH OPTIONS
+.B Setup next-stage bootloader and MBR for OXNAS boot rom:
+.TP
+.BI "\-b [" "start sector" "]"
+Begin to write next-stage bootloader \fIblob\fP to this 'start sector'.
+.TP
+.BI "\-d [" "disk image file name" "]"
+Setup OXNAS related changes in 'disk image file name'.
+.TP
+.BI "\-l [" "maximum sector count" "]"
+Use only 'maximum sector count' (largeness) to write next-stage
+bootloader \fIblob\fP.
+.TP
+.BI "\-p
+Setup primary OXNAS boot rom parameters (default functionality).
+.TP
+.BI "\-s
+Setup secondary OXNAS boot rom parameters.
+.PP
+.B Help end version output:
+.TP
+.BI "\-h"
+Print out a short help message.
+.TP
+.BI "\-v"
+Print out a short version and copyright message.
+
+.SH "EXIT STATUS"
+An exit status of zero indicates success. A non-zero exit status indicates failure.
+.TP
+.BI 0
+Success
+.TP
+.BI 1
+Operating error
+.TP
+.BI 3
+Wrong interpreter
+.br
+\fBsetupoxnasmbr\fP is a Bash shell script and demanded on Bash version 3 or above.
+
+.SH EXAMPLE
+Setup default primary boot parameters:
+.nf
+.B setupoxnasmbr -d hd.img oxnasblob.bin
+.PP
+Setup secondary boot parameters but use the primary sectors:
+.nf
+.B setupoxnasmbr -b 1 -l 238 -s -d hd.img oxnasblob.bin
+
+.SH "CONFORMING TO"
+Images that were changed by setupoxnasmbr can be launched both from the OXNAS boot rom
+inside the OXE800 and OXE810.
+
+.SH BUGS
+Please report bugs! Reporting bugs to @PACKAGE_BUGREPORT@.
+
+.SH VERSIONS
+This man page is current for version @PACKAGE_VERSION@ of @PACKAGE_NAME@.
+
+.SH CREDITS
+setupoxnasmbr is distributed under the GNU public license.  See the file COPYING for details.
+.PP
+A German WEB site is available at http://www.li-pro.de/soho:ihmnhd:start
+.PP
+I would be delighted to hear from you if you like this program.  Please contact me.
+
+.SH THANKS
+Especial thanks go out to Oxford Semiconductor Ltd. for grant the right
+to Western Digital for publishing the GPL Source Code archive.
+
+.SH AUTHOR
+This manual page was written by Stephan Linz <linz@li-pro.net>
+

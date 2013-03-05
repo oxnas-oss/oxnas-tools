@@ -1,4 +1,4 @@
-man1_MANS = mkoxnasblob.1
+man1_MANS = mkoxnasblob.1 setupoxnasmbr.1
 
 EXTRA_DIST = \
 	boot-tools stage1 \
